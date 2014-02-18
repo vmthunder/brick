@@ -155,25 +155,24 @@ class TgtAdm(TargetAdmin):
         fileutils.ensure_tree(self.volumes_dir)
 
         vol_id = name.split(':')[1]
+        iqn = '%s%s' % (self.iscsi_target_prefix, vol_id)
         if chap_auth is None:
             volume_conf = """
                 <target %s>
                     backing-store %s
                 </target>
-            """ % (name, path)
+            """ % (iqn, path)
         else:
             volume_conf = """
                 <target %s>
                     backing-store %s
                     %s
                 </target>
-            """ % (name, path, chap_auth)
-
+            """ % (iqn, path, chap_auth)
         LOG.info(_('Creating iscsi_target for: %s') % vol_id)
         volumes_dir = self.volumes_dir
         volume_path = os.path.join(volumes_dir, vol_id)
-
-        f = open(volume_path, 'w+')
+        f = open(volume_path+'.conf', 'w+')
         f.write(volume_conf)
         f.close()
 
@@ -185,7 +184,7 @@ class TgtAdm(TargetAdmin):
         try:
             (out, err) = self._execute('tgt-admin',
                                        '--update',
-                                       name,
+                                       iqn,
                                        run_as_root=True)
 
             LOG.debug("StdOut from tgt-admin --update: %s" % out)
@@ -212,7 +211,6 @@ class TgtAdm(TargetAdmin):
             os.unlink(volume_path)
             raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
 
-        iqn = '%s%s' % (self.iscsi_target_prefix, vol_id)
         tid = self._get_target(iqn)
         if tid is None:
             LOG.error(_("Failed to create iscsi target for volume "
@@ -248,7 +246,7 @@ class TgtAdm(TargetAdmin):
     def remove_iscsi_target(self, tid, lun, vol_id, vol_name, **kwargs):
         LOG.info(_('Removing iscsi_target for: %s') % vol_id)
         vol_uuid_file = vol_name
-        volume_path = os.path.join(self.volumes_dir, vol_uuid_file)
+        volume_path = os.path.join(self.volumes_dir, vol_uuid_file) + '.conf'
         if os.path.isfile(volume_path):
             iqn = '%s%s' % (self.iscsi_target_prefix,
                             vol_uuid_file)
