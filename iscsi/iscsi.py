@@ -147,7 +147,7 @@ class TgtAdm(TargetAdmin):
                         "id:%(vol_id)s: %(e)s")
                       % {'vol_id': name, 'e': str(e)})
 
-    def create_iscsi_target(self, name, tid, lun, path,
+    def create_iscsi_target(self, name, path,
                             chap_auth=None, **kwargs):
         # Note(jdg) tid and lun aren't used by TgtAdm but remain for
         # compatibility
