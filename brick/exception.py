@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # (c) Copyright 2013 Hewlett-Packard Development Company, L.P.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,8 +14,6 @@
 
 """Exceptions for the Brick library."""
 
-import sys
-
 from brick.openstack.common.gettextutils import _
 from brick.openstack.common import log as logging
 
@@ -32,7 +28,7 @@ class BrickException(Exception):
     a 'msg_fmt' property. That msg_fmt will get printf'd
     with the keyword arguments provided to the constructor.
     """
-    msg_fmt = _("An unknown exception occurred.")
+    message = _("An unknown exception occurred.")
     code = 500
     headers = {}
     safe = False
@@ -48,22 +44,27 @@ class BrickException(Exception):
 
         if not message:
             try:
-                message = self.msg_fmt % kwargs
+                message = self.message % kwargs
 
             except Exception:
-                exc_info = sys.exc_info()
                 # kwargs doesn't match a variable in the message
                 # log the issue and the kwargs
                 msg = (_("Exception in string format operation.  msg='%s'")
-                       % self.msg_fmt)
+                       % self.message)
                 LOG.exception(msg)
                 for name, value in kwargs.iteritems():
                     LOG.error("%s: %s" % (name, value))
 
                 # at least get the core message out if something happened
-                message = self.msg_fmt
+                message = self.message
 
+        # Put the message in 'msg' so that we can access it.  If we have it in
+        # message it will be overshadowed by the class' message attribute
+        self.msg = message
         super(BrickException, self).__init__(message)
+
+    def __unicode__(self):
+        return unicode(self.msg)
 
 
 class NotFound(BrickException):
@@ -93,14 +94,6 @@ class NoFibreChannelVolumeDeviceFound(BrickException):
 
 class VolumeDeviceNotFound(BrickException):
     message = _("Volume device not found at %(device)s.")
-
-
-class ISERTargetCreateFailed(BrickException):
-    message = _("Failed to create iser target for volume %(volume_id)s.")
-
-
-class ISERTargetRemoveFailed(BrickException):
-    message = _("Failed to remove iser target for volume %(volume_id)s.")
 
 
 class VolumeGroupNotFound(BrickException):

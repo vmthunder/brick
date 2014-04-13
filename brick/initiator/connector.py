@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2013 OpenStack Foundation.
 # All Rights Reserved.
 #
@@ -91,6 +89,13 @@ class InitiatorConnector(executor.Executor):
                                   use_multipath=use_multipath,
                                   device_scan_attempts=device_scan_attempts,
                                   *args, **kwargs)
+        elif protocol == "ISER":
+            return ISERConnector(root_helper=root_helper,
+                                 driver=driver,
+                                 execute=execute,
+                                 use_multipath=use_multipath,
+                                 device_scan_attempts=device_scan_attempts,
+                                 *args, **kwargs)
         elif protocol == "FIBRE_CHANNEL":
             return FibreChannelConnector(root_helper=root_helper,
                                          driver=driver,
@@ -202,9 +207,10 @@ class ISCSIConnector(InitiatorConnector):
                                           check_exit_code=[0, 255])[0] \
                 or ""
 
-            for ip in self._get_target_portals_from_iscsiadm_output(out):
+            for ip, iqn in self._get_target_portals_from_iscsiadm_output(out):
                 props = connection_properties.copy()
                 props['target_portal'] = ip
+                props['target_iqn'] = iqn
                 self._connect_to_iscsi_portal(props)
 
             self._rescan_iscsi()
@@ -256,12 +262,20 @@ class ISCSIConnector(InitiatorConnector):
         target_iqn - iSCSI Qualified Name
         target_lun - LUN id of the volume
         """
+        # Moved _rescan_iscsi and _rescan_multipath
+        # from _disconnect_volume_multipath_iscsi to here.
+        # Otherwise, if we do rescan after _linuxscsi.remove_multipath_device
+        # but before logging out, the removed devices under /dev/disk/by-path
+        # will reappear after rescan.
+        self._rescan_iscsi()
         host_device = self._get_device_path(connection_properties)
         multipath_device = None
         if self.use_multipath:
+            self._rescan_multipath()
             multipath_device = self._get_multipath_device_name(host_device)
             if multipath_device:
-                self._linuxscsi.remove_multipath_device(multipath_device)
+                device_realpath = os.path.realpath(host_device)
+                self._linuxscsi.remove_multipath_device(device_realpath)
                 return self._disconnect_volume_multipath_iscsi(
                     connection_properties, multipath_device)
 
@@ -326,14 +340,13 @@ class ISCSIConnector(InitiatorConnector):
                                   **kwargs)
 
     def _get_target_portals_from_iscsiadm_output(self, output):
-        return [line.split()[0] for line in output.splitlines()]
+        # return both portals and iqns
+        return [line.split() for line in output.splitlines()]
 
     def _disconnect_volume_multipath_iscsi(self, connection_properties,
                                            multipath_name):
         """This removes a multipath device and it's LUNs."""
         LOG.debug("Disconnect multipath device %s" % multipath_name)
-        self._rescan_iscsi()
-        self._rescan_multipath()
         block_devices = self.driver.get_all_block_devices()
         devices = []
         for dev in block_devices:
@@ -344,17 +357,42 @@ class ISCSIConnector(InitiatorConnector):
                 if mpdev:
                     devices.append(mpdev)
 
+        # Do a discovery to find all targets.
+        # Targets for multiple paths for the same multipath device
+        # may not be the same.
+        out = self._run_iscsiadm_bare(['-m',
+                                      'discovery',
+                                      '-t',
+                                      'sendtargets',
+                                      '-p',
+                                      connection_properties['target_portal']],
+                                      check_exit_code=[0, 255])[0] \
+            or ""
+
+        ips_iqns = self._get_target_portals_from_iscsiadm_output(out)
+
         if not devices:
             # disconnect if no other multipath devices
-            self._disconnect_mpath(connection_properties)
+            self._disconnect_mpath(connection_properties, ips_iqns)
             return
 
+        # Get a target for all other multipath devices
         other_iqns = [self._get_multipath_iqn(device)
                       for device in devices]
+        # Get all the targets for the current multipath device
+        current_iqns = [iqn for ip, iqn in ips_iqns]
 
-        if connection_properties['target_iqn'] not in other_iqns:
+        in_use = False
+        for current in current_iqns:
+            if current in other_iqns:
+                in_use = True
+                break
+
+        # If no other multipath device attached has the same iqn
+        # as the current device
+        if not in_use:
             # disconnect if no other multipath devices with same iqn
-            self._disconnect_mpath(connection_properties)
+            self._disconnect_mpath(connection_properties, ips_iqns)
             return
 
         # else do not disconnect iscsi portals,
@@ -411,7 +449,7 @@ class ISCSIConnector(InitiatorConnector):
                                    check_exit_code=[0, 255])
             except putils.ProcessExecutionError as err:
                 #as this might be one of many paths,
-                #only set successfull logins to startup automatically
+                #only set successful logins to startup automatically
                 if err.exit_code in [15]:
                     self._iscsiadm_update(connection_properties,
                                           "node.startup",
@@ -449,13 +487,11 @@ class ISCSIConnector(InitiatorConnector):
             return []
         return [entry for entry in devices if entry.startswith("ip-")]
 
-    def _disconnect_mpath(self, connection_properties):
-        entries = self._get_iscsi_devices()
-        ips = [ip.split("-")[1] for ip in entries
-               if connection_properties['target_iqn'] in ip]
-        for ip in ips:
+    def _disconnect_mpath(self, connection_properties, ips_iqns):
+        for ip, iqn in ips_iqns:
             props = connection_properties.copy()
             props['target_portal'] = ip
+            props['target_iqn'] = iqn
             self._disconnect_from_iscsi_portal(props)
 
         self._rescan_multipath()
@@ -499,6 +535,15 @@ class ISCSIConnector(InitiatorConnector):
 
     def _rescan_multipath(self):
         self._run_multipath('-r', check_exit_code=[0, 1, 21])
+
+
+class ISERConnector(ISCSIConnector):
+
+    def _get_device_path(self, iser_properties):
+        return ("/dev/disk/by-path/ip-%s-iser-%s-lun-%s" %
+                (iser_properties['target_portal'],
+                 iser_properties['target_iqn'],
+                 iser_properties.get('target_lun', 0)))
 
 
 class FibreChannelConnector(InitiatorConnector):
@@ -797,6 +842,21 @@ class RemoteFsConnector(InitiatorConnector):
                  execute=putils.execute,
                  device_scan_attempts=DEVICE_SCAN_ATTEMPTS_DEFAULT,
                  *args, **kwargs):
+        kwargs = kwargs or {}
+        conn = kwargs.get('conn')
+        if conn:
+            mount_point_base = conn.get('mount_point_base')
+            if mount_type.lower() == 'nfs':
+                kwargs['nfs_mount_point_base'] =\
+                    kwargs.get('nfs_mount_point_base') or\
+                    mount_point_base
+            elif mount_type.lower() == 'glusterfs':
+                kwargs['glusterfs_mount_point_base'] =\
+                    kwargs.get('glusterfs_mount_point_base') or\
+                    mount_point_base
+        else:
+            LOG.warn(_("Connection details not present."
+                       " RemoteFsClient may not initialize properly."))
         self._remotefsclient = remotefs.RemoteFsClient(mount_type, root_helper,
                                                        execute=execute,
                                                        *args, **kwargs)
@@ -822,7 +882,7 @@ class RemoteFsConnector(InitiatorConnector):
         """
 
         mnt_flags = []
-        if 'options' in connection_properties:
+        if connection_properties.get('options'):
             mnt_flags = connection_properties['options'].split()
 
         nfs_share = connection_properties['export']

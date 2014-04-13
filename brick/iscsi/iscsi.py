@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
@@ -29,7 +27,6 @@ import time
 from brick import exception
 from brick import executor
 from brick.openstack.common import fileutils
-from brick.openstack.common.gettextutils import _
 from brick.openstack.common import log as logging
 from brick.openstack.common import processutils as putils
 
@@ -82,6 +79,17 @@ class TargetAdmin(executor.Executor):
 
 class TgtAdm(TargetAdmin):
     """iSCSI target administration using tgtadm."""
+    VOLUME_CONF = """
+                <target %s>
+                    backing-store %s
+                </target>
+                  """
+    VOLUME_CONF_WITH_CHAP_AUTH = """
+                                <target %s>
+                                    backing-store %s
+                                    %s
+                                </target>
+                                 """
 
     def __init__(self, root_helper, volumes_dir,
                  target_prefix='iqn.2010-10.org.openstack:',
@@ -145,9 +153,9 @@ class TgtAdm(TargetAdmin):
             LOG.error(_("Failed to recover attempt to create "
                         "iscsi backing lun for volume "
                         "id:%(vol_id)s: %(e)s")
-                      % {'vol_id': name, 'e': str(e)})
+                      % {'vol_id': name, 'e': e})
 
-    def create_iscsi_target(self, name, path,
+    def create_iscsi_target(self, name, tid, lun, path,
                             chap_auth=None, **kwargs):
         # Note(jdg) tid and lun aren't used by TgtAdm but remain for
         # compatibility
@@ -155,26 +163,22 @@ class TgtAdm(TargetAdmin):
         fileutils.ensure_tree(self.volumes_dir)
 
         vol_id = name.split(':')[1]
-        iqn = '%s%s' % (self.iscsi_target_prefix, vol_id)
         if chap_auth is None:
-            volume_conf = """
-                <target %s>
-                    backing-store %s
-                </target>
-            """ % (iqn, path)
+            volume_conf = self.VOLUME_CONF % (name, path)
         else:
-            volume_conf = """
-                <target %s>
-                    backing-store %s
-                    %s
-                </target>
-            """ % (iqn, path, chap_auth)
+            volume_conf = self.VOLUME_CONF_WITH_CHAP_AUTH % (name,
+                                                             path, chap_auth)
+
         LOG.info(_('Creating iscsi_target for: %s') % vol_id)
         volumes_dir = self.volumes_dir
         volume_path = os.path.join(volumes_dir, vol_id)
-        f = open(volume_path+'.conf', 'w+')
+
+        f = open(volume_path, 'w+')
         f.write(volume_conf)
         f.close()
+        LOG.debug(_('Created volume path %(vp)s,\n'
+                    'content: %(vc)s')
+                  % {'vp': volume_path, 'vc': volume_conf})
 
         old_persist_file = None
         old_name = kwargs.get('old_name', None)
@@ -182,13 +186,14 @@ class TgtAdm(TargetAdmin):
             old_persist_file = os.path.join(volumes_dir, old_name)
 
         try:
-            (out, err) = self._execute('tgt-admin',
-                                       '--update',
-                                       iqn,
+            # with the persistent tgts we create them
+            # by creating the entry in the persist file
+            # and then doing an update to get the target
+            # created.
+            (out, err) = self._execute('tgt-admin', '--update', name,
                                        run_as_root=True)
-
-            LOG.debug("StdOut from tgt-admin --update: %s" % out)
-            LOG.debug("StdErr from tgt-admin --update: %s" % err)
+            LOG.debug("StdOut from tgt-admin --update: %s", out)
+            LOG.debug("StdErr from tgt-admin --update: %s", err)
 
             # Grab targets list for debug
             # Consider adding a check for lun 0 and 1 for tgtadm
@@ -203,22 +208,22 @@ class TgtAdm(TargetAdmin):
                                        run_as_root=True)
             LOG.debug("Targets after update: %s" % out)
         except putils.ProcessExecutionError as e:
-            LOG.error(_("Failed to create iscsi target for volume "
+            LOG.warning(_("Failed to create iscsi target for volume "
                         "id:%(vol_id)s: %(e)s")
-                      % {'vol_id': vol_id, 'e': str(e)})
+                        % {'vol_id': vol_id, 'e': e})
 
             #Don't forget to remove the persistent file we created
             os.unlink(volume_path)
             raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
 
+        iqn = '%s%s' % (self.iscsi_target_prefix, vol_id)
         tid = self._get_target(iqn)
         if tid is None:
             LOG.error(_("Failed to create iscsi target for volume "
                         "id:%(vol_id)s. Please ensure your tgtd config file "
                         "contains 'include %(volumes_dir)s/*'") % {
-                            'vol_id': vol_id,
-                            'volumes_dir': volumes_dir,
-                        })
+                      'vol_id': vol_id,
+                      'volumes_dir': volumes_dir, })
             raise exception.NotFound()
 
         # NOTE(jdg): Sometimes we have some issues with the backing lun
@@ -233,10 +238,10 @@ class TgtAdm(TargetAdmin):
                 os.unlink(volume_path)
                 raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
 
-        # Finally check once more and if no go, fail and punt
-        if not self._verify_backing_lun(iqn, tid):
-            os.unlink(volume_path)
-            raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
+            # Finally check once more and if no go, fail and punt
+            if not self._verify_backing_lun(iqn, tid):
+                os.unlink(volume_path)
+                raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
 
         if old_persist_file is not None and os.path.exists(old_persist_file):
             os.unlink(old_persist_file)
@@ -246,7 +251,12 @@ class TgtAdm(TargetAdmin):
     def remove_iscsi_target(self, tid, lun, vol_id, vol_name, **kwargs):
         LOG.info(_('Removing iscsi_target for: %s') % vol_id)
         vol_uuid_file = vol_name
-        volume_path = os.path.join(self.volumes_dir, vol_uuid_file) + '.conf'
+        volume_path = os.path.join(self.volumes_dir, vol_uuid_file)
+        if not os.path.exists(volume_path):
+            LOG.warning(_('Volume path %s does not exist, '
+                          'nothing to remove.') % volume_path)
+            return
+
         if os.path.isfile(volume_path):
             iqn = '%s%s' % (self.iscsi_target_prefix,
                             vol_uuid_file)
@@ -263,10 +273,42 @@ class TgtAdm(TargetAdmin):
         except putils.ProcessExecutionError as e:
             LOG.error(_("Failed to remove iscsi target for volume "
                         "id:%(vol_id)s: %(e)s")
-                      % {'vol_id': vol_id, 'e': str(e)})
+                      % {'vol_id': vol_id, 'e': e})
             raise exception.ISCSITargetRemoveFailed(volume_id=vol_id)
 
-        os.unlink(volume_path)
+        # NOTE(jdg): There's a bug in some versions of tgt that
+        # will sometimes fail silently when using the force flag
+        #    https://bugs.launchpad.net/ubuntu/+source/tgt/+bug/1305343
+        # For now work-around by checking if the target was deleted,
+        # if it wasn't, try again without the force.
+
+        # This will NOT do any good for the case of mutliple sessions
+        # which the force was aded for but it will however address
+        # the cases pointed out in bug:
+        #    https://bugs.launchpad.net/cinder/+bug/1304122
+        if self._get_target(iqn):
+            try:
+                LOG.warning(_('Silent failure of target removal '
+                              'detected, retry....'))
+                self._execute('tgt-admin',
+                              '--delete',
+                              iqn,
+                              run_as_root=True)
+            except putils.ProcessExecutionError as e:
+                LOG.error(_("Failed to remove iscsi target for volume "
+                            "id:%(vol_id)s: %(e)s")
+                          % {'vol_id': vol_id, 'e': e})
+                raise exception.ISCSITargetRemoveFailed(volume_id=vol_id)
+
+        # NOTE(jdg): This *should* be there still but incase
+        # it's not we don't care, so just ignore it if was
+        # somehow deleted between entry of this method
+        # and here
+        if os.path.exists(volume_path):
+            os.unlink(volume_path)
+        else:
+            LOG.debug('Volume path %s not found at end, '
+                      'of remove_iscsi_target.' % volume_path)
 
     def show_target(self, tid, iqn=None, **kwargs):
         if iqn is None:
@@ -348,7 +390,7 @@ class IetAdm(TargetAdmin):
                 vol_id = name.split(':')[1]
                 LOG.error(_("Failed to create iscsi target for volume "
                             "id:%(vol_id)s: %(e)s")
-                          % {'vol_id': vol_id, 'e': str(e)})
+                          % {'vol_id': vol_id, 'e': e})
                 raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
         return tid
 
@@ -422,6 +464,7 @@ class FakeIscsiHelper(object):
 
     def __init__(self):
         self.tid = 1
+        self._execute = None
 
     def set_execute(self, execute):
         self._execute = execute
@@ -436,7 +479,7 @@ class LioAdm(TargetAdmin):
     def __init__(self, root_helper, lio_initiator_iqns='',
                  iscsi_target_prefix='iqn.2010-10.org.openstack:',
                  execute=putils.execute):
-        super(LioAdm, self).__init__('rtstool', root_helper, execute)
+        super(LioAdm, self).__init__('cinder-rtstool', root_helper, execute)
 
         self.iscsi_target_prefix = iscsi_target_prefix
         self.lio_initiator_iqns = lio_initiator_iqns
@@ -444,13 +487,13 @@ class LioAdm(TargetAdmin):
 
     def _verify_rtstool(self):
         try:
-            self._execute('rtstool', 'verify')
+            self._execute('cinder-rtstool', 'verify')
         except (OSError, putils.ProcessExecutionError):
-            LOG.error(_('rtstool is not installed correctly'))
+            LOG.error(_('cinder-rtstool is not installed correctly'))
             raise
 
     def _get_target(self, iqn):
-        (out, err) = self._execute('rtstool',
+        (out, err) = self._execute('cinder-rtstool',
                                    'get-targets',
                                    run_as_root=True)
         lines = out.split('\n')
@@ -480,7 +523,7 @@ class LioAdm(TargetAdmin):
             extra_args.append(self.lio_initiator_iqns)
 
         try:
-            command_args = ['rtstool',
+            command_args = ['cinder-rtstool',
                             'create',
                             path,
                             name,
@@ -490,11 +533,11 @@ class LioAdm(TargetAdmin):
                 command_args.extend(extra_args)
             self._execute(*command_args, run_as_root=True)
         except putils.ProcessExecutionError as e:
-                LOG.error(_("Failed to create iscsi target for volume "
-                            "id:%s.") % vol_id)
-                LOG.error("%s" % str(e))
+            LOG.error(_("Failed to create iscsi target for volume "
+                        "id:%s.") % vol_id)
+            LOG.error("%s" % e)
 
-                raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
+            raise exception.ISCSITargetCreateFailed(volume_id=vol_id)
 
         iqn = '%s%s' % (self.iscsi_target_prefix, vol_id)
         tid = self._get_target(iqn)
@@ -511,14 +554,14 @@ class LioAdm(TargetAdmin):
         iqn = '%s%s' % (self.iscsi_target_prefix, vol_uuid_name)
 
         try:
-            self._execute('rtstool',
+            self._execute('cinder-rtstool',
                           'delete',
                           iqn,
                           run_as_root=True)
         except putils.ProcessExecutionError as e:
             LOG.error(_("Failed to remove iscsi target for volume "
                         "id:%s.") % vol_id)
-            LOG.error("%s" % str(e))
+            LOG.error("%s" % e)
             raise exception.ISCSITargetRemoveFailed(volume_id=vol_id)
 
     def show_target(self, tid, iqn=None, **kwargs):
@@ -538,7 +581,7 @@ class LioAdm(TargetAdmin):
 
         # Add initiator iqns to target ACL
         try:
-            self._execute('rtstool', 'add-initiator',
+            self._execute('cinder-rtstool', 'add-initiator',
                           volume_iqn,
                           auth_user,
                           auth_pass,
@@ -548,3 +591,25 @@ class LioAdm(TargetAdmin):
             LOG.error(_("Failed to add initiator iqn %s to target") %
                       connector['initiator'])
             raise exception.ISCSITargetAttachFailed(volume_id=volume['id'])
+
+
+class ISERTgtAdm(TgtAdm):
+    VOLUME_CONF = """
+                <target %s>
+                    driver iser
+                    backing-store %s
+                </target>
+                  """
+    VOLUME_CONF_WITH_CHAP_AUTH = """
+                                <target %s>
+                                    driver iser
+                                    backing-store %s
+                                    %s
+                                </target>
+                                 """
+
+    def __init__(self, root_helper, volumes_dir,
+                 target_prefix='iqn.2010-10.org.iser.openstack:',
+                 execute=putils.execute):
+        super(ISERTgtAdm, self).__init__(root_helper, volumes_dir,
+                                         target_prefix, execute)
