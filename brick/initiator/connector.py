@@ -181,7 +181,6 @@ class ISCSIConnector(InitiatorConnector):
         super(ISCSIConnector, self).set_execute(execute)
         self._linuxscsi.set_execute(execute)
 
-    @synchronized('connect_volume')
     def connect_volume(self, connection_properties):
         """Attach the volume to instance_name.
 
@@ -251,7 +250,6 @@ class ISCSIConnector(InitiatorConnector):
         device_info['path'] = host_device
         return device_info
 
-    @synchronized('connect_volume')
     def disconnect_volume(self, connection_properties, device_info):
         """Detach the volume from instance_name.
 
@@ -565,7 +563,6 @@ class FibreChannelConnector(InitiatorConnector):
         self._linuxscsi.set_execute(execute)
         self._linuxfc.set_execute(execute)
 
-    @synchronized('connect_volume')
     def connect_volume(self, connection_properties):
         """Attach the volume to instance_name.
 
@@ -673,7 +670,6 @@ class FibreChannelConnector(InitiatorConnector):
         device_info['devices'] = devices
         return device_info
 
-    @synchronized('connect_volume')
     def disconnect_volume(self, connection_properties, device_info):
         """Detach the volume from instance_name.
 
