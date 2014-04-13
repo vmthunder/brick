@@ -29,6 +29,7 @@ from brick import executor
 from brick.openstack.common import fileutils
 from brick.openstack.common import log as logging
 from brick.openstack.common import processutils as putils
+from brick.openstack.common.gettextutils import _
 
 
 LOG = logging.getLogger(__name__)
@@ -171,7 +172,8 @@ class TgtAdm(TargetAdmin):
 
         LOG.info(_('Creating iscsi_target for: %s') % vol_id)
         volumes_dir = self.volumes_dir
-        volume_path = os.path.join(volumes_dir, vol_id)
+        postfix = ".conf"
+        volume_path = os.path.join(volumes_dir, vol_id) + postfix
 
         f = open(volume_path, 'w+')
         f.write(volume_conf)
@@ -251,7 +253,8 @@ class TgtAdm(TargetAdmin):
     def remove_iscsi_target(self, tid, lun, vol_id, vol_name, **kwargs):
         LOG.info(_('Removing iscsi_target for: %s') % vol_id)
         vol_uuid_file = vol_name
-        volume_path = os.path.join(self.volumes_dir, vol_uuid_file)
+        postfix = ".conf"
+        volume_path = os.path.join(self.volumes_dir, vol_uuid_file) + postfix
         if not os.path.exists(volume_path):
             LOG.warning(_('Volume path %s does not exist, '
                           'nothing to remove.') % volume_path)
