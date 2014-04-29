@@ -322,6 +322,13 @@ class TgtAdm(TargetAdmin):
         if tid is None:
             raise exception.NotFound()
 
+    def exist(self, iqn):
+        tid = self._get_target(iqn)
+        if tid is None:
+            return False
+        else:
+            return True
+    
 
 class IetAdm(TargetAdmin):
     """iSCSI target administration using ietadm."""
@@ -505,6 +512,7 @@ class LioAdm(TargetAdmin):
                 return line
 
         return None
+
 
     def create_iscsi_target(self, name, tid, lun, path,
                             chap_auth=None, **kwargs):
