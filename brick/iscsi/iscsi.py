@@ -101,7 +101,7 @@ class TgtAdm(TargetAdmin):
         self.volumes_dir = volumes_dir
 
     def _get_target(self, iqn):
-        (out, err) = self._execute('tgt-admin', '--show', run_as_root=True)
+        (out, err) = self._execute('tgt-admin', '--show', run_as_root=True, root_helper=self._root_helper)
         lines = out.split('\n')
         for line in lines:
             if iqn in line:
