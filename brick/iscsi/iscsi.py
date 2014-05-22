@@ -193,7 +193,8 @@ class TgtAdm(TargetAdmin):
             # and then doing an update to get the target
             # created.
             (out, err) = self._execute('tgt-admin', '--update', name,
-                                       run_as_root=True)
+                                       run_as_root=True,
+                                       root_helper=self._root_helper)
             LOG.debug("StdOut from tgt-admin --update: %s", out)
             LOG.debug("StdErr from tgt-admin --update: %s", err)
 
@@ -207,7 +208,8 @@ class TgtAdm(TargetAdmin):
                                        'show',
                                        '--mode',
                                        'target',
-                                       run_as_root=True)
+                                       run_as_root=True,
+                                       root_helper=self._root_helper)
             LOG.debug("Targets after update: %s" % out)
         except putils.ProcessExecutionError as e:
             LOG.warning(_("Failed to create iscsi target for volume "
@@ -272,7 +274,8 @@ class TgtAdm(TargetAdmin):
                           '--force',
                           '--delete',
                           iqn,
-                          run_as_root=True)
+                          run_as_root=True,
+                          root_helper=self._root_helper)
         except putils.ProcessExecutionError as e:
             LOG.error(_("Failed to remove iscsi target for volume "
                         "id:%(vol_id)s: %(e)s")
@@ -296,7 +299,8 @@ class TgtAdm(TargetAdmin):
                 self._execute('tgt-admin',
                               '--delete',
                               iqn,
-                              run_as_root=True)
+                              run_as_root=True,
+                              root_helper=self._root_helper)
             except putils.ProcessExecutionError as e:
                 LOG.error(_("Failed to remove iscsi target for volume "
                             "id:%(vol_id)s: %(e)s")
