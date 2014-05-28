@@ -116,7 +116,7 @@ class TgtAdm(TargetAdmin):
         capture = False
         target_info = []
 
-        (out, err) = self._execute('tgt-admin', '--show', run_as_root=True)
+        (out, err) = self._execute('tgt-admin', '--show', run_as_root=True, root_helper=self._root_helper)
         lines = out.split('\n')
 
         for line in lines:
@@ -147,7 +147,8 @@ class TgtAdm(TargetAdmin):
                                        '--op', 'new', '--mode',
                                        'logicalunit', '--tid',
                                        tid, '--lun', '1', '-b',
-                                       path, run_as_root=True)
+                                       path, run_as_root=True,
+                                       root_helper=self._root_helper)
             LOG.debug('StdOut from recreate backing lun: %s' % out)
             LOG.debug('StdErr from recreate backing lun: %s' % err)
         except putils.ProcessExecutionError as e:
